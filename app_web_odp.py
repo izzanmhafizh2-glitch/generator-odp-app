@@ -209,7 +209,7 @@ def generate_process(items_to_process):
 # ================= UI STREAMLIT =================
 st.set_page_config(page_title="Generator ODP (Google Sheets)", layout="centered")
 
-st.title("⚡ Generator Kode ODP BTH")
+st.title("Generator Kode ODP")
 st.caption("Terhubung langsung dengan Master Database Google Sheets Cloud")
 
 tab1, tab2 = st.tabs(["📝 Input Manual Single", "📁 Drop File Excel"])
