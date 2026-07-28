@@ -51,20 +51,22 @@ def get_area_code(lat, lon):
         location = geolocator.reverse((lat, lon), timeout=10)
         if location:
             address = location.raw.get('address', {})
-            kelurahan = address.get('village') or address.get('suburb') or address.get('neighbourhood') or address.get('hamlet') or "UNK"
-            clean_name = kelurahan.replace('Kelurahan', '').replace('Desa', '').strip().upper()
+            kelurahan = address.get('village') or address.get('suburb') or address.get('neighbourhood') or address.get('hamlet') or None
             
-            if "SUKAMERTA" in clean_name:
-                return "SMT", kelurahan
-            elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
-                return "BLS", kelurahan
-            elif "PASAWAHAN" in clean_name:
-                return "PSW", kelurahan
-            
-            return clean_name[:3], kelurahan
+            if kelurahan:
+                clean_name = kelurahan.replace('Kelurahan', '').replace('Desa', '').strip().upper()
+                
+                if "SUKAMERTA" in clean_name:
+                    return "SMT", kelurahan
+                elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
+                    return "BLS", kelurahan
+                elif "PASAWAHAN" in clean_name:
+                    return "PSW", kelurahan
+                
+                return clean_name[:3], kelurahan
     except Exception:
         pass
-    return "UNK", "Tidak Ditemukan"
+    return None, "-"
 
 def load_master_database_gsheet(sheet):
     """Membaca Master Database langsung dari Google Sheets Online."""
@@ -115,7 +117,8 @@ def save_to_google_sheet(sheet, new_records):
             r["koordinat"],
             r["keterangan"]
         ])
-    sheet.append_rows(rows_to_append)
+    if rows_to_append:
+        sheet.append_rows(rows_to_append)
 
 def generate_process(items_to_process):
     sheet = get_google_sheet()
@@ -127,38 +130,53 @@ def generate_process(items_to_process):
 
     for idx, item in enumerate(items_to_process):
         lat, lng = parse_koordinat(item["koordinat_raw"])
+        
+        # 1. Cek jika angka/format koordinat tidak valid
         if lat is None or lng is None:
             results.append({
-                "kode_odp": "ERROR",
+                "kode_odp": "-",
                 "kelurahan": "-",
                 "odc": item["odc_raw"],
-                "koordinat": item["koordinat_raw"],
-                "keterangan": "Format koordinat tidak valid"
+                "koordinat": str(item["koordinat_raw"]),
+                "keterangan": "koordinat not valid"
             })
+            progress_bar.progress((idx + 1) / total)
             continue
 
         odc_num = str(item["odc_raw"]).strip().zfill(3)
         formatted_koordinat = f"{lat}, {lng}"
         location_key = f"{formatted_koordinat}_{odc_num}"
 
+        # 2. Cek jika koordinat & ODC duplikat (sudah ada di database)
         if location_key in existing_locations_map:
-            old_kode_odp = existing_locations_map[location_key]
-            kode_area, nama_kelurahan = get_area_code(lat, lng)
-            
-            record = {
-                "kode_odp": old_kode_odp,
-                "kelurahan": nama_kelurahan,
+            results.append({
+                "kode_odp": "-",
+                "kelurahan": "-",
                 "odc": odc_num,
                 "koordinat": formatted_koordinat,
-                "keterangan": "Tikor sudah pernah tergenerate"
-            }
-            results.append(record)
-            time.sleep(1)
+                "keterangan": "koordinat not valid"
+            })
+            time.sleep(0.5)
             progress_bar.progress((idx + 1) / total)
             continue
 
+        # 3. Cek lokasi via geocoder
         kode_area, nama_kelurahan = get_area_code(lat, lng)
 
+        # Jika kelurahan/area tidak ditemukan oleh peta
+        if not kode_area:
+            results.append({
+                "kode_odp": "-",
+                "kelurahan": "-",
+                "odc": odc_num,
+                "koordinat": formatted_koordinat,
+                "keterangan": "koordinat not valid"
+            })
+            time.sleep(0.5)
+            progress_bar.progress((idx + 1) / total)
+            continue
+
+        # 4. Generate Kode ODP Baru jika semua lolos validasi
         key = f"{kode_area}_{odc_num}"
         while True:
             last_odp_num = max_odp_counter.get(key, 0)
@@ -182,7 +200,7 @@ def generate_process(items_to_process):
         }
 
         results.append(record)
-        time.sleep(1)
+        time.sleep(0.5)
         progress_bar.progress((idx + 1) / total)
 
     save_to_google_sheet(sheet, results)
@@ -234,7 +252,7 @@ if st.button("🚀 GENERATE KODE ODP", type="primary"):
                 st.success("✅ Selesai! Data otomatis tersimpan di Google Sheets Online.")
                 st.subheader("Hasil Generate:")
                 
-                # Menampilkan Tabel HTML Murni (100% Bebas Pandas)
+                # Menampilkan Tabel HTML Murni
                 html_table = "<table border='1' style='border-collapse: collapse; width: 100%; text-align: left;'>"
                 html_table += "<tr style='background-color: #f2f2f2;'><th>Kode ODP</th><th>Kelurahan</th><th>ODC</th><th>Koordinat</th><th>Keterangan</th></tr>"
                 for row in res:
