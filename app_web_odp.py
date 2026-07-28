@@ -15,12 +15,19 @@ CREDENTIALS_FILE = "credentials.json"
 geolocator = Nominatim(user_agent="odp_bth_web_generator_app")
 
 def get_google_sheet():
-    """Koneksi ke Google Sheets menggunakan ID dan Credentials JSON."""
+    """Koneksi ke Google Sheets (Mendukung Cloud Secrets & File Lokal)."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+    # Cek apakah aplikasi berjalan di Streamlit Cloud (Pakai Secrets)
+    if "gcp_service_account" in st.secrets:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    # Jika berjalan di Komputer/Laptop Lokal (Pakai File credentials.json)
+    else:
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+        
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
     return sheet
