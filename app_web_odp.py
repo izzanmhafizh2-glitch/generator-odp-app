@@ -5,14 +5,15 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 from openpyxl import load_workbook
-from geopy.geocoders import Nominatim
+from geopy.geocoders import Nominatim, ArcGIS
 
 # ID Google Sheets & File Credentials Anda
 SPREADSHEET_ID = "1z7WQdXzYZRejDFdNrZITFJITwlFoCLxXNIVSaWnQkos"  # Ganti jika ada ID Google Sheets baru
 CREDENTIALS_FILE = "credentials.json"
 
-# Inisialisasi Map Geocoder
-geolocator = Nominatim(user_agent="odp_bth_web_generator_app_v2")
+# Inisialisasi 2 Provider Peta (OpenStreetMap & ArcGIS)
+geolocator_osm = Nominatim(user_agent="odp_bth_web_generator_app_v3")
+geolocator_arcgis = ArcGIS()
 
 def get_google_sheet():
     """Koneksi ke Google Sheets (Mendukung Cloud Secrets & File Lokal)."""
@@ -58,61 +59,82 @@ def parse_koordinat(raw_text):
     return None, None
 
 def get_area_code(lat, lon):
-    """Mencari nama kelurahan/wilayah berdasarkan koordinat & mengonversi ke 3 huruf kode area."""
-    try:
-        # Nominatim reverse lookup
-        location = geolocator.reverse((lat, lon), timeout=15)
-        if location:
-            address = location.raw.get('address', {})
-            
-            # Cari nama wilayah dari level paling spesifik ke level yang lebih luas
-            nama_wilayah = (
-                address.get('village') or 
-                address.get('suburb') or 
-                address.get('neighbourhood') or 
-                address.get('hamlet') or 
-                address.get('subdistrict') or
-                address.get('town') or
-                address.get('city_district') or
-                address.get('municipality') or
-                address.get('county') or
-                None
-            )
-            
-            if nama_wilayah:
-                # Bersihkan kata prefiks yang umum
-                clean_name = (
-                    nama_wilayah
-                    .replace('Kelurahan', '')
-                    .replace('Desa', '')
-                    .replace('Kecamatan', '')
-                    .replace('Kabupaten', '')
-                    .strip()
-                    .upper()
-                )
-                
-                # Pemetaan Kode Area Spesifik
-                if "SUKAMERTA" in clean_name:
-                    return "SMT", nama_wilayah
-                elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
-                    return "BLS", nama_wilayah
-                elif "PASAWAHAN" in clean_name:
-                    return "PSW", nama_wilayah
-                elif "PALUMBONSARI" in clean_name:
-                    return "PAL", nama_wilayah
-                
-                # Ambil 3 huruf pertama nama wilayah jika tidak ada di kondisi khusus
-                kode_3_huruf = re.sub(r'[^A-Z]', '', clean_name)[:3]
-                if len(kode_3_huruf) == 3:
-                    return kode_3_huruf, nama_wilayah
-                elif len(clean_name) >= 3:
-                    return clean_name[:3], nama_wilayah
-                    
-    except Exception:
-        pass
+    """
+    Mencari nama kelurahan/wilayah secara agresif.
+    Memakai OpenStreetMap dulu, jika gagal/timeout langsung otomatis oper ke ArcGIS.
+    """
+    address = {}
     
-    # Jika benar-benar tidak terdeteksi oleh peta
-    return "GEN", "Umum"
+    # --- TAHAP 1: Coba dengan OpenStreetMap ---
+    try:
+        loc = geolocator_osm.reverse((lat, lon), timeout=10)
+        if loc and loc.raw.get('address'):
+            address = loc.raw.get('address', {})
+    except Exception:
+        address = {}
+
+    # --- TAHAP 2: Jika OSM Gagal/Kosong, Pakai ArcGIS (Akurat di Indonesia) ---
+    if not address:
+        try:
+            loc = geolocator_arcgis.reverse((lat, lon), timeout=10)
+            if loc and loc.raw.get('address'):
+                arcgis_addr = loc.raw.get('address', {})
+                address = {
+                    'village': arcgis_addr.get('Neighborhood') or arcgis_addr.get('District'),
+                    'suburb': arcgis_addr.get('City'),
+                    'subdistrict': arcgis_addr.get('Subregion'),
+                    'city': arcgis_addr.get('MetroArea')
+                }
+        except Exception:
+            pass
+
+    # --- TAHAP 3: Ekstraksi Nama Wilayah (Dari Mikro ke Makro) ---
+    nama_wilayah = (
+        address.get('village') or 
+        address.get('suburb') or 
+        address.get('neighbourhood') or 
+        address.get('hamlet') or 
+        address.get('subdistrict') or
+        address.get('town') or
+        address.get('city_district') or
+        address.get('municipality') or
+        address.get('county') or
+        address.get('city') or
+        address.get('state')
+    )
+
+    # --- TAHAP 4: Pembersihan Nama & Pembuatan Kode 3 Huruf ---
+    if nama_wilayah:
+        clean_name = (
+            str(nama_wilayah)
+            .replace('Kelurahan', '')
+            .replace('Desa', '')
+            .replace('Kecamatan', '')
+            .replace('Kabupaten', '')
+            .replace('Kota', '')
+            .strip()
+            .upper()
+        )
+        
+        # Pemetaan Khusus Kode Kelurahan
+        if "SUKAMERTA" in clean_name:
+            return "SMT", nama_wilayah
+        elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
+            return "BLS", nama_wilayah
+        elif "PASAWAHAN" in clean_name:
+            return "PSW", nama_wilayah
+        elif "PALUMBONSARI" in clean_name:
+            return "PAL", nama_wilayah
+
+        kode_huruf = re.sub(r'[^A-Z]', '', clean_name)
+        if len(kode_huruf) >= 3:
+            return kode_huruf[:3], nama_wilayah
+        elif len(clean_name) >= 3:
+            return clean_name[:3], nama_wilayah
+        else:
+            return clean_name.zfill(3), nama_wilayah
+
+    return "KRD", "Koordinat Terdeteksi"
 
 def load_master_database_gsheet(sheet):
     """Membaca Master Database langsung dari Google Sheets Online."""
@@ -232,7 +254,7 @@ def generate_process(items_to_process):
         }
 
         results.append(record)
-        time.sleep(1.0) # Delay API Geocoder
+        time.sleep(0.5) # Delay secukupnya untuk API geocoder
         progress_bar.progress((idx + 1) / total)
 
     save_to_google_sheet(sheet, results)
