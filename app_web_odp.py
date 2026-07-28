@@ -58,12 +58,15 @@ def parse_koordinat(raw_text):
     return None, None
 
 def get_area_code(lat, lon):
-    """Mencari nama kelurahan berdasarkan koordinat & mengonversi ke 3 huruf kode area."""
+    """Mencari nama kelurahan/wilayah berdasarkan koordinat & mengonversi ke 3 huruf kode area."""
     try:
+        # Nominatim reverse lookup
         location = geolocator.reverse((lat, lon), timeout=15)
         if location:
             address = location.raw.get('address', {})
-            kelurahan = (
+            
+            # Cari nama wilayah dari level paling spesifik ke level yang lebih luas
+            nama_wilayah = (
                 address.get('village') or 
                 address.get('suburb') or 
                 address.get('neighbourhood') or 
@@ -71,28 +74,44 @@ def get_area_code(lat, lon):
                 address.get('subdistrict') or
                 address.get('town') or
                 address.get('city_district') or
+                address.get('municipality') or
+                address.get('county') or
                 None
             )
             
-            if kelurahan:
-                clean_name = kelurahan.replace('Kelurahan', '').replace('Desa', '').replace('Kecamatan', '').strip().upper()
+            if nama_wilayah:
+                # Bersihkan kata prefiks yang umum
+                clean_name = (
+                    nama_wilayah
+                    .replace('Kelurahan', '')
+                    .replace('Desa', '')
+                    .replace('Kecamatan', '')
+                    .replace('Kabupaten', '')
+                    .strip()
+                    .upper()
+                )
                 
                 # Pemetaan Kode Area Spesifik
                 if "SUKAMERTA" in clean_name:
-                    return "SMT", kelurahan
+                    return "SMT", nama_wilayah
                 elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
-                    return "BLS", kelurahan
+                    return "BLS", nama_wilayah
                 elif "PASAWAHAN" in clean_name:
-                    return "PSW", kelurahan
+                    return "PSW", nama_wilayah
                 elif "PALUMBONSARI" in clean_name:
-                    return "PAL", kelurahan
+                    return "PAL", nama_wilayah
                 
-                # Default 3 huruf pertama nama kelurahan
-                return (clean_name[:3] if len(clean_name) >= 3 else "GEN"), kelurahan
+                # Ambil 3 huruf pertama nama wilayah jika tidak ada di kondisi khusus
+                kode_3_huruf = re.sub(r'[^A-Z]', '', clean_name)[:3]
+                if len(kode_3_huruf) == 3:
+                    return kode_3_huruf, nama_wilayah
+                elif len(clean_name) >= 3:
+                    return clean_name[:3], nama_wilayah
+                    
     except Exception:
         pass
     
-    # Fallback jika API map mengalami timeout/gagal
+    # Jika benar-benar tidak terdeteksi oleh peta
     return "GEN", "Umum"
 
 def load_master_database_gsheet(sheet):
