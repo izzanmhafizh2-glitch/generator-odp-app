@@ -8,11 +8,11 @@ from openpyxl import load_workbook
 from geopy.geocoders import Nominatim
 
 # ID Google Sheets & File Credentials Anda
-SPREADSHEET_ID = "1z7WQdXzYZRejDFdNrZITFJITwlFoCLxXNIVSaWnQkos"  # Ganti dengan ID Google Sheets baru jika ada
+SPREADSHEET_ID = "1z7WQdXzYZRejDFdNrZITFJITwlFoCLxXNIVSaWnQkos"  # Ganti jika ada ID Google Sheets baru
 CREDENTIALS_FILE = "credentials.json"
 
 # Inisialisasi Map Geocoder
-geolocator = Nominatim(user_agent="odp_bth_web_generator_app")
+geolocator = Nominatim(user_agent="odp_bth_web_generator_app_v2")
 
 def get_google_sheet():
     """Koneksi ke Google Sheets (Mendukung Cloud Secrets & File Lokal)."""
@@ -20,11 +20,9 @@ def get_google_sheet():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    # Cek apakah aplikasi berjalan di Streamlit Cloud (Pakai Secrets)
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    # Jika berjalan di Komputer/Laptop Lokal (Pakai File credentials.json)
     else:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
         
@@ -33,14 +31,28 @@ def get_google_sheet():
     return sheet
 
 def parse_koordinat(raw_text):
-    """Mendukung format koordinat dengan simbol °, koma, maupun spasi."""
+    """
+    Validasi dan Parse Format Koordinat:
+    - -6.294005, 107.330222
+    - -6.230508° 107.360487°
+    - -6.230508°107.360487°
+    - -6.230508 107.360487
+    - -6.230508,107.360487
+    """
     if not raw_text:
         return None, None
-    clean_text = str(raw_text).replace('°', '').strip()
-    parts = re.findall(r'[-+]?\d*\.\d+|\d+', clean_text)
-    if len(parts) >= 2:
+    
+    # Pisahkan simbol derajat dan koma menjadi spasi
+    clean_text = str(raw_text).replace('°', ' ').replace(',', ' ').strip()
+    parts = re.findall(r'[-+]?\d+\.\d+|[-+]?\d+', clean_text)
+    
+    if len(parts) == 2:
         try:
-            return float(parts[0]), float(parts[1])
+            lat = float(parts[0])
+            lng = float(parts[1])
+            # Memastikan nilai lat/lng dalam batas koordinat Bumi
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
         except ValueError:
             pass
     return None, None
@@ -48,25 +60,40 @@ def parse_koordinat(raw_text):
 def get_area_code(lat, lon):
     """Mencari nama kelurahan berdasarkan koordinat & mengonversi ke 3 huruf kode area."""
     try:
-        location = geolocator.reverse((lat, lon), timeout=10)
+        location = geolocator.reverse((lat, lon), timeout=15)
         if location:
             address = location.raw.get('address', {})
-            kelurahan = address.get('village') or address.get('suburb') or address.get('neighbourhood') or address.get('hamlet') or None
+            kelurahan = (
+                address.get('village') or 
+                address.get('suburb') or 
+                address.get('neighbourhood') or 
+                address.get('hamlet') or 
+                address.get('subdistrict') or
+                address.get('town') or
+                address.get('city_district') or
+                None
+            )
             
             if kelurahan:
-                clean_name = kelurahan.replace('Kelurahan', '').replace('Desa', '').strip().upper()
+                clean_name = kelurahan.replace('Kelurahan', '').replace('Desa', '').replace('Kecamatan', '').strip().upper()
                 
+                # Pemetaan Kode Area Spesifik
                 if "SUKAMERTA" in clean_name:
                     return "SMT", kelurahan
                 elif "BALONG" in clean_name or "BALONGSARI" in clean_name:
                     return "BLS", kelurahan
                 elif "PASAWAHAN" in clean_name:
                     return "PSW", kelurahan
+                elif "PALUMBONSARI" in clean_name:
+                    return "PAL", kelurahan
                 
-                return clean_name[:3], kelurahan
+                # Default 3 huruf pertama nama kelurahan
+                return (clean_name[:3] if len(clean_name) >= 3 else "GEN"), kelurahan
     except Exception:
         pass
-    return None, "-"
+    
+    # Fallback jika API map mengalami timeout/gagal
+    return "GEN", "Umum"
 
 def load_master_database_gsheet(sheet):
     """Membaca Master Database langsung dari Google Sheets Online."""
@@ -131,14 +158,14 @@ def generate_process(items_to_process):
     for idx, item in enumerate(items_to_process):
         lat, lng = parse_koordinat(item["koordinat_raw"])
         
-        # 1. Cek jika angka/format koordinat tidak valid
+        # 1. KONDISI: KOORDINAT NOT VALID (Format Salah / Bukan Angka Koordinat Bumi)
         if lat is None or lng is None:
             results.append({
-                "kode_odp": "-",
-                "kelurahan": "-",
-                "odc": item["odc_raw"],
-                "koordinat": str(item["koordinat_raw"]),
-                "keterangan": "koordinat not valid"
+                "kode_odp": "",
+                "kelurahan": "",
+                "odc": "",
+                "koordinat": "",
+                "keterangan": "Koordinat  not valid"
             })
             progress_bar.progress((idx + 1) / total)
             continue
@@ -147,36 +174,22 @@ def generate_process(items_to_process):
         formatted_koordinat = f"{lat}, {lng}"
         location_key = f"{formatted_koordinat}_{odc_num}"
 
-        # 2. Cek jika koordinat & ODC duplikat (sudah ada di database)
+        # 2. KONDISI: KOORDINAT DUPLIKAT (Sudah ada di Google Sheets)
         if location_key in existing_locations_map:
             results.append({
-                "kode_odp": "-",
-                "kelurahan": "-",
-                "odc": odc_num,
+                "kode_odp": "",
+                "kelurahan": "",
+                "odc": "",
                 "koordinat": formatted_koordinat,
-                "keterangan": "koordinat not valid"
+                "keterangan": "Koordinat duplikat"
             })
-            time.sleep(0.5)
+            time.sleep(0.3)
             progress_bar.progress((idx + 1) / total)
             continue
 
-        # 3. Cek lokasi via geocoder
+        # 3. KONDISI: KOORDINAT VALID (Proses Pembuatan Kode ODP Baru)
         kode_area, nama_kelurahan = get_area_code(lat, lng)
 
-        # Jika kelurahan/area tidak ditemukan oleh peta
-        if not kode_area:
-            results.append({
-                "kode_odp": "-",
-                "kelurahan": "-",
-                "odc": odc_num,
-                "koordinat": formatted_koordinat,
-                "keterangan": "koordinat not valid"
-            })
-            time.sleep(0.5)
-            progress_bar.progress((idx + 1) / total)
-            continue
-
-        # 4. Generate Kode ODP Baru jika semua lolos validasi
         key = f"{kode_area}_{odc_num}"
         while True:
             last_odp_num = max_odp_counter.get(key, 0)
@@ -196,11 +209,11 @@ def generate_process(items_to_process):
             "kelurahan": nama_kelurahan,
             "odc": odc_num,
             "koordinat": formatted_koordinat,
-            "keterangan": ""
+            "keterangan": "DONE"
         }
 
         results.append(record)
-        time.sleep(0.5)
+        time.sleep(1.0) # Delay API Geocoder
         progress_bar.progress((idx + 1) / total)
 
     save_to_google_sheet(sheet, results)
@@ -209,7 +222,7 @@ def generate_process(items_to_process):
 # ================= UI STREAMLIT =================
 st.set_page_config(page_title="Generator ODP (Google Sheets)", layout="centered")
 
-st.title("Generator Kode ODP")
+st.title("⚡ Generator Kode ODP BTH")
 st.caption("Terhubung langsung dengan Master Database Google Sheets Cloud")
 
 tab1, tab2 = st.tabs(["📝 Input Manual Single", "📁 Drop File Excel"])
@@ -234,12 +247,12 @@ if st.button("🚀 GENERATE KODE ODP", type="primary"):
         for row_idx in range(2, sheet.max_row + 1):
             koordinat_val = sheet.cell(row=row_idx, column=1).value
             odc_val = sheet.cell(row=row_idx, column=2).value
-            if koordinat_val and odc_val is not None:
-                items_to_process.append({"koordinat_raw": koordinat_val, "odc_raw": odc_val})
+            if koordinat_val or odc_val is not None:
+                items_to_process.append({"koordinat_raw": koordinat_val, "odc_raw": odc_val if odc_val is not None else ""})
         st.info(f"Membaca {len(items_to_process)} data dari file Excel...")
     
-    elif input_koordinat and input_odc:
-        items_to_process.append({"koordinat_raw": input_koordinat, "odc_raw": input_odc})
+    elif input_koordinat or input_odc:
+        items_to_process.append({"koordinat_raw": input_koordinat, "odc_raw": input_odc if input_odc else ""})
         st.info("Memproses 1 data dari isian manual...")
     
     else:
@@ -252,11 +265,11 @@ if st.button("🚀 GENERATE KODE ODP", type="primary"):
                 st.success("✅ Selesai! Data otomatis tersimpan di Google Sheets Online.")
                 st.subheader("Hasil Generate:")
                 
-                # Menampilkan Tabel HTML Murni
+                # Tampilan Tabel Hasil
                 html_table = "<table border='1' style='border-collapse: collapse; width: 100%; text-align: left;'>"
-                html_table += "<tr style='background-color: #f2f2f2;'><th>Kode ODP</th><th>Kelurahan</th><th>ODC</th><th>Koordinat</th><th>Keterangan</th></tr>"
-                for row in res:
-                    html_table += f"<tr><td><b>{row['kode_odp']}</b></td><td>{row['kelurahan']}</td><td>{row['odc']}</td><td>{row['koordinat']}</td><td>{row['keterangan']}</td></tr>"
+                html_table += "<tr style='background-color: #f2f2f2;'><th>No</th><th>Kode ODP</th><th>Nama Kelurahan</th><th>Nomor ODC</th><th>Koordinat</th><th>Keterangan</th></tr>"
+                for idx_row, row in enumerate(res, 1):
+                    html_table += f"<tr><td>{idx_row}</td><td><b>{row['kode_odp']}</b></td><td>{row['kelurahan']}</td><td>{row['odc']}</td><td>{row['koordinat']}</td><td>{row['keterangan']}</td></tr>"
                 html_table += "</table>"
                 
                 st.markdown(html_table, unsafe_allow_html=True)
