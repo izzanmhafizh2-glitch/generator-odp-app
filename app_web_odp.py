@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from geopy.geocoders import Nominatim
 
 # ID Google Sheets & File Credentials Anda
-SPREADSHEET_ID = "1z7WQdXzYZRejDFdNrZITFJITwlFoCLxXNIVSaWnQkos"  # Ganti dengan ID Google Sheets baru jika ada
+SPREADSHEET_ID = "1z7WQdXzYZRejDFdNrZITFJITwlFoCLxXNIVSaWnQkos"  # Ganti jika ada ID Google Sheets baru
 CREDENTIALS_FILE = "credentials.json"
 
 # Inisialisasi Map Geocoder
@@ -20,11 +20,9 @@ def get_google_sheet():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    # Cek apakah aplikasi berjalan di Streamlit Cloud (Pakai Secrets)
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    # Jika berjalan di Komputer/Laptop Lokal (Pakai File credentials.json)
     else:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
         
@@ -33,11 +31,22 @@ def get_google_sheet():
     return sheet
 
 def parse_koordinat(raw_text):
-    """Mendukung format koordinat dengan simbol °, koma, maupun spasi."""
+    """
+    Mendukung format:
+    1. -6.230508° 107.360487°
+    2. -6.230508 107.360487
+    3. -6.230508°107.360487°
+    4. -6.230508, 107.360487
+    """
     if not raw_text:
         return None, None
-    clean_text = str(raw_text).replace('°', '').strip()
-    parts = re.findall(r'[-+]?\d*\.\d+|\d+', clean_text)
+    
+    # Ganti simbol ° dan koma dengan spasi agar terpisah dengan jelas
+    clean_text = str(raw_text).replace('°', ' ').replace(',', ' ').strip()
+    
+    # Ambil semua pola angka desimal (positif maupun negatif)
+    parts = re.findall(r'[-+]?\d+\.\d+|[-+]?\d+', clean_text)
+    
     if len(parts) >= 2:
         try:
             return float(parts[0]), float(parts[1])
@@ -209,7 +218,7 @@ def generate_process(items_to_process):
 # ================= UI STREAMLIT =================
 st.set_page_config(page_title="Generator ODP (Google Sheets)", layout="centered")
 
-st.title("Generator Kode ODP")
+st.title("⚡ Generator Kode ODP BTH")
 st.caption("Terhubung langsung dengan Master Database Google Sheets Cloud")
 
 tab1, tab2 = st.tabs(["📝 Input Manual Single", "📁 Drop File Excel"])
